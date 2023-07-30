@@ -19,6 +19,7 @@ from peft import (
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
+    AutoModelForSeq2SeqLM,
     AutoTokenizer,
     BitsAndBytesConfig,
     DataCollatorForLanguageModeling,
@@ -35,6 +36,7 @@ os.environ["WANDB_DISABLED"]="true"
 
 def get_model(
 		model_name: str,
+		task_type: str,
 	    model_config_args: Optional[dict] = None,
 	    quant_config_args: Optional[dict] = None) -> AutoModelForCausalLM:
 	"""loads hugging face model and returns it
@@ -45,6 +47,7 @@ def get_model(
 		quant_config_args: the quantization configuration for BitsAndBytes
 
 	"""
+	assert task_type in ("CAUSAL_LM", "SEQ_2_SEQ_LM"), "only CAUSAL_LM and SEQ_2_SEQ_LM supported"
 
 	if model_config_args is None:
 		model_config_args={}
@@ -55,14 +58,23 @@ def get_model(
 	model_config = AutoConfig.from_pretrained(model_name, trust_remote_code=True, use_cache=True, **model_config_args)
 	quant_config = BitsAndBytesConfig(**quant_config_args)
 
-	#TODO need to add other types of LLM like seq2seq
-	model = AutoModelForCausalLM.from_pretrained(
-		model_name,
-		quantization_config=quant_config,
-		trust_remote_code=True,
-		device_map="auto",
-		offload_folder="offload",
-		config=model_config)
+	if task_type == "CAUSAL_LM":	
+		model = AutoModelForCausalLM.from_pretrained(
+			model_name,
+			quantization_config=quant_config,
+			trust_remote_code=True,
+			device_map="auto",
+			offload_folder="offload",
+			config=model_config)
+
+	elif task_type == "SEQ_2_SEQ_LM":
+		model = AutoModelForSeq2SeqLM.from_pretrained(
+			model_name,
+			quantization_config=quant_config,
+			trust_remote_code=True,
+			device_map="auto",
+			offload_folder="offload",
+			config=model_config)
 
 	return model
 
@@ -100,18 +112,22 @@ def tokenize_function(
 	truncation,
 	max_length,
 	padding,
-	task_type
+	task_type,
+	input_name,
+	output_name
 	):
 
-	assert task_type in ("CAUSAL_LM"), "only causal_lm supported for now"
+	assert task_type in ("CAUSAL_LM", "SEQ_2_SEQ_LM"), "only CAUSAL_LM and SEQ_2_SEQ_LM supported"
 	
 	if task_type == "CAUSAL_LM":
 		example = tokenizer(example['full_prompt'], truncation=truncation, max_length=max_length, padding=padding)
 
-	# for now not supported yet
 	elif task_type == "SEQ_2_SEQ_LM":
-			example["input_ids"] = tokenizer(example["input_ids"], truncation=truncation, max_length=max_length, padding=padding).input_ids
-			example["labels"] = tokenizer(example["labels"], truncation=truncation, max_length=max_length, padding=padding).input_ids
+			input_encodings = tokenizer(example[input_name], truncation=truncation, max_length=max_length, padding=padding)
+			example["input_ids"] = input_encodings["input_ids"]
+			example["attention_mask"] = input_encodings["attention_mask"]
+			with tokenizer.as_target_tokenizer():
+				example["labels"] = tokenizer(example[output_name], truncation=truncation, max_length=max_length, padding=padding).input_ids
 
 	return example
 
@@ -121,7 +137,9 @@ def tokenize_dataset(
 	max_length: Optional[int] = None,
 	truncation: Optional[bool] = True,
 	padding: Optional[bool] = True,
-	task_type: Optional[str] = "CAUSAL_LM"
+	task_type: Optional[str] = "CAUSAL_LM",
+	input_name: Optional[str] = "input_ids",
+	output_name: Optional[str] = "label"
 	):
 	"""apply tokenizer to dataset
 
@@ -137,7 +155,9 @@ def tokenize_dataset(
 																	'truncation': truncation, 
 																	'padding': padding, 
 																	'max_length': max_length,
-																	'task_type': task_type}, batched=True)
+																	'task_type': task_type,
+																	'input_name': input_name,
+																	'output_name': output_name}, batched=True)
 	return tokenized_dataset
 
 
@@ -190,55 +210,62 @@ def main():
 
 	logging.debug(f"config: {config}")
 
+	task_type = config["task_type"]
+	logging.debug(task_type)
+
+	if config["peft"] and config["peft"]["peft_config"]:
+		config["peft"]["peft_config"]["task_type"] = task_type
+	elif config["peft"]:
+		config["peft"]["peft_config"] = {}
+		config["peft"]["peft_config"]["task_type"] = task_type
+
 	# turn from string into the torch datatype
 	config['model']['quant_config']['bnb_4bit_compute_dtype'] = eval(config['model']['quant_config']['bnb_4bit_compute_dtype'])
 
-	model = get_model(config["model"]["model_name"], config["model"]["model_config"], config["model"]["quant_config"])
+	model = get_model(config["model"]["model_name"], task_type, config["model"]["model_config"], config["model"]["quant_config"])
 
-	peft = config["peft"]
-	if peft:
+	if  config["peft"]:
 		model = load_peft_model(model, config["peft"]["peft_config"], config["peft"]["type"])
-		task_type = config["peft"]["peft_config"]["task_type"]
-	else:
-		task_type = config["task_type"]
 
 	trainable_params, all_params = get_trainable_parameters(model)
 	logging.debug(f"trainable parameters: {trainable_params / all_params * 100}%")
 
 	tokenizer = AutoTokenizer.from_pretrained(config["model"]["model_name"])
 	
-	if config["data_location"] == "local":
-		train_data = pd.read_csv(config['train_data'])
+	if config["data"]["data_location"] == "local":
+		train_data = pd.read_csv(config["data"]["train_data"])
+		logging.debug(train_data.head())
 		train_dataset = Dataset.from_pandas(train_data)
-		if config['eval_data']:
-			eval_data = pd.read_csv(config['eval_data'])
+		if config["data"]["evaluate"]:
+			eval_data = pd.read_csv(config["data"]["eval_data"])
 			eval_dataset = Dataset.from_pandas(eval_data)
 
-	elif config["data_location"] == "hub":
-		dataset = load_dataset(config["location"])
+	elif config["data"]["data_location"] == "hub":
+		dataset = load_dataset(config["data"]["dataset_name"])
 		train_dataset = dataset["train"]
 		eval_dataset = dataset["validation"]
 
 
-	logging.debug(train_data.head())
-
-	
 	train_dataset_tokenized = tokenize_dataset(
 		train_dataset,
 		tokenizer,
 		config['token']['max_length'],
 		config['token']['truncation'],
 		config['token']['padding'],
-		task_type)
+		task_type,
+		config["data"]["input_name"],
+		config["data"]["output_name"])
 
-	if config['eval_data']:
+	if config["data"]["evaluate"]:
 			eval_dataset_tokenized = tokenize_dataset(
 				eval_dataset,
 				tokenizer,
 				config['token']['max_length'],
 				config['token']['truncation'],
 				config['token']['padding'],
-				task_type)
+				task_type,
+				config["data"]["input_name"],
+				config["data"]["output_name"])
 	else:
 		eval_dataset_tokenized=None
 
