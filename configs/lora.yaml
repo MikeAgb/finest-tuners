@@ -1,11 +1,12 @@
 model:
-  model_name: "tiiuae/falcon-7b"
+  model_name: "gpt2"
   model_config:
   quant_config:
     load_in_4bit: true
     bnb_4bit_quant_type: "nf4"
     bnb_4bit_use_double_quant: true
     bnb_4bit_compute_dtype: "torch.bfloat16"
+task_type: "CAUSAL_LM"
 peft:
   type: "lora"
   peft_config:
@@ -13,13 +14,14 @@ peft:
     lora_dropout: 0.1
     r: 2
     bias: "none"
-    task_type: "CAUSAL_LM"
     target_modules:
-    #  - "c_attn"
-      - "query_key_value"
-data_location: "local"
-train_data: "train.csv"
-eval_data:
+     - "c_attn"
+      # - "query_key_value"
+data:
+  data_location: "local"
+  evaluate: false
+  train_data: "train.csv"
+  eval_data:
 token:
   max_length: 
   truncation: false

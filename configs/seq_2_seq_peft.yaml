@@ -1,25 +1,35 @@
 model:
-  model_name: "gpt2"
+  model_name: "t5-small"
   model_config:
   quant_config:
     load_in_4bit: true
     bnb_4bit_quant_type: "nf4"
     bnb_4bit_use_double_quant: true
     bnb_4bit_compute_dtype: "torch.bfloat16"
-task_type: "CAUSAL_LM"
+task_type: "SEQ_2_SEQ_LM"
 peft:
+  type: "lora"
+  peft_config:
+    lora_alpha: 16
+    lora_dropout: 0.1
+    r: 2
+    bias: "none"
+    target_modules:
+      - "q"
+      - "v"
 data:
-  data_location: "local"
-  train_data: "train.csv"
+  data_location: "hub"
+  dataset_name: "knkarthick/dialogsum"
   evaluate: false
-  eval_data:
+  input_name: "dialogue"
+  output_name: "summary"
 token:
-  max_length: 
-  truncation: false
-  padding: false
+  max_length: 128
+  truncation: true
+  padding: "max_length"
 train:
   type: "trainer"
-  final_save_path: "gpt"
+  final_save_path: "./"
   mlm: false
   train_config:
     per_device_train_batch_size: 1

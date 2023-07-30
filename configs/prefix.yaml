@@ -6,14 +6,16 @@ model:
     bnb_4bit_quant_type: "nf4"
     bnb_4bit_use_double_quant: true
     bnb_4bit_compute_dtype: "torch.bfloat16"
+task_type: "CAUSAL_LM"
 peft:
   type: "prefix"
   peft_config:
-    task_type: "CAUSAL_LM"
     num_virtual_tokens: 50
-data_location: "local"
-train_data: "train.csv"
-eval_data:
+data:
+  data_location: "local"
+  train_data: "train.csv"
+  evaluate: false
+  eval_data:
 token:
   max_length: 
   truncation: false
