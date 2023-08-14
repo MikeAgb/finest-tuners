@@ -13,8 +13,10 @@ from peft import (
     IA3Config,
     LoraConfig,
     PrefixTuningConfig,
+    PeftConfig,
     TaskType,
-    get_peft_model
+    get_peft_model,
+    PeftModel
 )
 from transformers import (
     AutoConfig,
@@ -106,6 +108,34 @@ def load_peft_model(
 	return peft_model
 
 
+def load_peft_model_from_checkpoint(
+	model_name: str,
+	model_path: str,
+	task_type: str,
+	):
+
+
+	if task_type == "CAUSAL_LM":	
+		model = AutoModelForCausalLM.from_pretrained(
+			model_name,
+			load_in_8bit=True,
+			trust_remote_code=True,
+			device_map="auto",
+			offload_folder="offload")
+
+	elif task_type == "SEQ_2_SEQ_LM":
+		model = AutoModelForSeq2SeqLM.from_pretrained(
+			model_name,
+			load_in_8bit=True,
+			trust_remote_code=True,
+			device_map="auto",
+			offload_folder="offload")
+
+	model = PeftModel.from_pretrained(model, model_path)
+
+	return model
+
+
 def tokenize_function(
 	example,
     tokenizer,
@@ -186,8 +216,7 @@ def train_regular(
 		args=training_args,
 		train_dataset=train_dataset,
 		eval_dataset=eval_dataset,
-		data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=mlm),
-		)
+		data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=mlm),)
 
 	trainer.train()
 
@@ -225,15 +254,25 @@ def main():
 	# turn from string into the torch datatype
 	config['model']['quant_config']['bnb_4bit_compute_dtype'] = eval(config['model']['quant_config']['bnb_4bit_compute_dtype'])
 
-	model = get_model(config["model"]["model_name"], task_type, config["model"]["model_config"], config["model"]["quant_config"])
+	if config['model'].get('from_peft'):
+		model = load_peft_model_from_checkpoint(
+				config['model']['model_name'],
+				config['model']['peft_checkpoint'],
+				config["task_type"])
 
-	if config.get("peft"):
-		model = load_peft_model(model, config["peft"]["peft_config"], config["peft"]["type"])
+	else:
+		model = get_model(config["model"]["model_name"], task_type, config["model"]["model_config"], config["model"]["quant_config"])
+
+		if config.get("peft"):
+			model = load_peft_model(model, config["peft"]["peft_config"], config["peft"]["type"])
+
+	tokenizer = AutoTokenizer.from_pretrained(config["model"]["model_name"])
 
 	trainable_params, all_params = get_trainable_parameters(model)
 	logging.debug(f"trainable parameters: {trainable_params / all_params * 100}%")
 
-	tokenizer = AutoTokenizer.from_pretrained(config["model"]["model_name"])
+
+
 	
 	if config["data"]["data_location"] == "local":
 		train_data = pd.read_csv(config["data"]["train_data"])
