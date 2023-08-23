@@ -1,12 +1,14 @@
 import os
 import pandas as pd
 from huggingface_hub import login
+import argparse
+import yaml
+import torch
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoModelForSeq2SeqLM,
-    AutoTokenizer,
-    pipeline
+    AutoTokenizer
 )
 from peft import (
     PeftConfig,
@@ -14,26 +16,21 @@ from peft import (
     get_peft_model,
     PeftModel
 )
-import torch
-import transformers
 
-# Hugging Face login
-access_token = "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"
-login(token=access_token)
-
-# Test dataset creation
-data = {
-    "full_prompt": ['hello there']
-}
-df = pd.DataFrame(data)
-df.to_csv('test.csv', index=False)
-
-
-# Run the training job
-os.system('python fine_tune.py --config=llama.yaml')
-
-# Load model
 def load_peft_model_from_checkpoint(model_name: str, model_path: str, task_type: str):
+    """
+    Load a PEFT model from a checkpoint.
+
+    Args:
+        model_name (str): The name of the model.
+        model_path (str): The path to the model checkpoint.
+        task_type (str): The type of task (e.g., "CAUSAL_LM", "SEQ_2_SEQ_LM").
+
+    Returns:
+        model: The loaded model.
+        tokenizer: The tokenizer for the model.
+    """
+
     if task_type == "CAUSAL_LM":
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
@@ -41,7 +38,7 @@ def load_peft_model_from_checkpoint(model_name: str, model_path: str, task_type:
             return_dict=True,
             trust_remote_code=True,
             torch_dtype=torch.float16,
-            device_map="auto",
+            device_map="auto"
         )
     elif task_type == "SEQ_2_SEQ_LM":
         model = AutoModelForSeq2SeqLM.from_pretrained(
@@ -50,49 +47,85 @@ def load_peft_model_from_checkpoint(model_name: str, model_path: str, task_type:
             load_in_8bit=True,
             trust_remote_code=True,
             torch_dtype=torch.float16,
-            device_map="auto",
+            device_map="auto"
         )
 
     model = PeftModel.from_pretrained(model, model_path)
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+
     return model, tokenizer
 
-model_name = "meta-llama/Llama-2-7b-chat"
-model_path = "test_llama"
-task_type = "CAUSAL_LM"
-model, tokenizer = load_peft_model_from_checkpoint(model_name, model_path, task_type)
 
-model_name_for_pipeline = "meta-llama/Llama-2-7b-chat-hf"
-tokenizer_for_pipeline = AutoTokenizer.from_pretrained(model_name_for_pipeline)
-text_generation_pipeline = transformers.pipeline(
-    "text-generation",
-    model=model_name_for_pipeline,
-    torch_dtype=torch.float16,
-    device_map="auto",
-)
-sequences = text_generation_pipeline(
-    'I liked "Breaking Bad" and "Band of Brothers". Do you have any recommendations of other shows I might like?\n',
-    do_sample=True,
-    top_k=10,
-    num_return_sequences=1,
-    eos_token_id=tokenizer_for_pipeline.eos_token_id,
-    max_length=200,
-)
-for seq in sequences:
-    print(f"Result: {seq['generated_text']}")
+def format_message(user_prompt, system_prompt='', history=[]):
+    """
+    Format a message with a user prompt, system prompt, and conversation history.
 
-prompt = "this is a test"
-inputs = tokenizer(prompt, return_tensors="pt", return_token_type_ids=False)
-inputs = inputs.to('cuda')
-output = tokenizer.decode(
-    model.generate(
+    Args:
+        user_prompt (str): The user's message.
+        system_prompt (str, optional): The system's message. Defaults to ''.
+        history (list, optional): The conversation history. Defaults to [].
+
+    Returns:
+        str: The formatted message.
+    """
+    
+    message = f"<s>[INST] <<SYS>>\n{{ {system_prompt} }}\n<</SYS>>\n\n"
+    for user_msg, model_answer in history:
+        message += f"{{ {user_msg} }} [/INST] {{ {model_answer} }} </s><s>[INST] "
+    message += f"{{ {user_prompt} }} [/INST]\n"
+
+    return message
+
+
+def generate_response(model, tokenizer, prompt: str, device='cuda', max_new_tokens=100, temperature=1, repetition_penalty=1):
+    """
+    Generate a response using the model.
+
+    Args:
+        model: The trained model.
+        tokenizer: The tokenizer associated with the model.
+        prompt (str): The user input prompt.
+        device (str): The device to run the model on, default is 'cuda' (GPU). Use 'cpu' if you don't have a GPU.
+        max_new_tokens (int): Maximum number of tokens to generate.
+        temperature (float): Sampling temperature for generating text.
+        repetition_penalty (float): Penalty for repeated tokens.
+
+    Returns:
+        str: The generated response.
+    """
+    
+    inputs = tokenizer(format_message(prompt), return_tensors="pt", return_token_type_ids=False)
+    inputs = inputs.to(device)
+    
+    generated_ids = model.generate(
         **inputs,
-        max_new_tokens=100,
-        temperature=1,
-        repetition_penalty=1,
-    )[0],
-    skip_special_tokens=True
-)
-print(output)
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        repetition_penalty=repetition_penalty
+    )[0]
+    
+    return tokenizer.decode(generated_ids, skip_special_tokens=True)
 
 
+def main():
+    parser = argparse.ArgumentParser(description="Load PEFT model and generate a response.")
+    parser.add_argument("--config", type=str, required=True, help="Path to the YAML configuration file.")
+    parser.add_argument("--prompt", type=str, required=True, help="User prompt for generating a response.")
+    
+    args = parser.parse_args()
+
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+
+    model_name = config["model"]["model_name"]
+    model_path = config["train"]["final_save_path"]
+    task_type = config["task_type"]
+    
+    model, tokenizer = load_peft_model_from_checkpoint(model_name, model_path, task_type)
+    
+    response = generate_response(model, tokenizer, args.prompt)
+    print(response)
+
+
+if __name__ == "__main__":
+    main()
