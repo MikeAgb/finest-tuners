@@ -70,16 +70,12 @@ def save_results_to_file(results, model_id, filename="benchmark.json"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Benchmark OpenAI models.')
-    parser.add_argument('--model-id', type=str, required=True, help='Model ID to use for benchmarking.')
-    parser.add_argument('--prompts-file', type=str, default='prompts.txt', help='File containing the prompts to benchmark.')
+    parser.add_argument('--model-id', type=str, default='gpt-3.5-turbo', help='Model ID to use for benchmarking.')
+    parser.add_argument('--prompts-file', type=str, default='prompts.txt', help='File containing the prompts to benchmark. Each prompt should be on a separate line')
 
     args = parser.parse_args()
 
     input_filename = args.prompts_file
-
-    if not input_filename:
-        print("Please provide a prompts file using --prompts_file argument.")
-        exit(1)
     
     benchmarks = benchmark_prompts(input_filename, args.model_id)
     
