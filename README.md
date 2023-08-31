@@ -1,5 +1,5 @@
 # finest-tuners
-Fine-tuning library for LLMs
+Fine-tune LLMs with a single line of code!
 
 ## Getting Started
 
